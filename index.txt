@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Premium Holiday Itinerary</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PDF Generation Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'holiday-planner';
+
+        let tripId = new URLSearchParams(window.location.search).get('trip');
+        if (!tripId) {
+            tripId = crypto.randomUUID();
+            const newUrl = new URL(window.location);
+            newUrl.searchParams.set('trip', tripId);
+            window.history.pushState({}, '', newUrl);
+        }
+
+        let isUpdatingFromServer = false;
+        let currentUser = null;
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            const initAuth = async () => {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            };
+            await initAuth();
+            onAuthStateChanged(auth, (user) => {
+                currentUser = user;
+                if (user) setupFirestoreListener();
+            });
+
+            document.getElementById('itinerary-content').addEventListener('input', debounce(() => {
+                if (!isUpdatingFromServer) saveToFirebase();
+            }, 1000));
+        });
+
+        function setupFirestoreListener() {
+            if (!currentUser) return;
+            const tripDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'trips', tripId);
+            onSnapshot(tripDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    isUpdatingFromServer = true;
+                    renderData(docSnap.data());
+                    isUpdatingFromServer = false;
+                } else {
+                    saveToFirebase(); 
+                }
+            }, (error) => console.error("Firestore Error:", error));
+        }
+
+        async function saveToFirebase() {
+            if (!currentUser) return;
+            const data = {
+                title: document.getElementById('trip-title').value,
+                dates: document.getElementById('trip-dates').value,
+                days: []
+            };
+            document.querySelectorAll('.day-group').forEach(group => {
+                const day = {
+                    headline: group.querySelector('.day-headline').value,
+                    date: group.querySelector('.day-date').value,
+                    activities: []
+                };
+                group.querySelectorAll('.activity-item').forEach(item => {
+                    day.activities.push({
+                        title: item.querySelector('.act-title').value,
+                        url: item.querySelector('.act-url').value,
+                        notes: item.querySelector('.act-notes').value
+                    });
+                });
+                data.days.push(day);
+            });
+            const tripDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'trips', tripId);
+            await setDoc(tripDocRef, data).catch(err => console.error("Save Error:", err));
+        }
+
+        function renderData(data) {
+            document.getElementById('trip-title').value = data.title || "";
+            document.getElementById('trip-dates').value = data.dates || "";
+            const container = document.getElementById('days-container');
+            container.innerHTML = "";
+            if (!data.days || data.days.length === 0) {
+                document.getElementById('empty-state').classList.remove('hidden');
+                return;
+            }
+            document.getElementById('empty-state').classList.add('hidden');
+            data.days.forEach((day, index) => {
+                const dayTemplate = document.getElementById('day-template');
+                const dayClone = dayTemplate.content.cloneNode(true);
+                dayClone.querySelector('.day-number').textContent = index + 1;
+                dayClone.querySelector('.day-headline').value = day.headline || "";
+                dayClone.querySelector('.day-date').value = day.date || "";
+                const actContainer = dayClone.querySelector('.activities-container');
+                (day.activities || []).forEach(act => {
+                    const actTemplate = document.getElementById('activity-template');
+                    const actClone = actTemplate.content.cloneNode(true);
+                    actClone.querySelector('.act-title').value = act.title || "";
+                    actClone.querySelector('.act-url').value = act.url || "";
+                    actClone.querySelector('.act-notes').value = act.notes || "";
+                    actContainer.appendChild(actClone);
+                });
+                container.appendChild(dayClone);
+            });
+        }
+
+        function debounce(func, timeout = 300) {
+            let timer;
+            return (...args) => {
+                clearTimeout(timer);
+                timer = setTimeout(() => { func.apply(this, args); }, timeout);
+            };
+        }
+
+        window.addDay = () => {
+            const container = document.getElementById('days-container');
+            const template = document.getElementById('day-template');
+            container.appendChild(template.content.cloneNode(true));
+            renderDataFromDOM(); // Refresh numbers
+            saveToFirebase();
+        };
+
+        function renderDataFromDOM() {
+            document.querySelectorAll('.day-number').forEach((span, i) => span.textContent = i + 1);
+        }
+
+        window.removeDay = (btn) => {
+            btn.closest('.day-group').remove();
+            renderDataFromDOM();
+            saveToFirebase();
+        };
+
+        window.addActivity = (btn) => {
+            const container = btn.closest('.day-group').querySelector('.activities-container');
+            container.appendChild(document.getElementById('activity-template').content.cloneNode(true));
+            saveToFirebase();
+        };
+
+        window.removeActivity = (btn) => {
+            btn.closest('.activity-item').remove();
+            saveToFirebase();
+        };
+
+        window.copyShareLink = () => {
+            const url = window.location.href;
+            const tempInput = document.createElement("input");
+            document.body.appendChild(tempInput);
+            tempInput.value = url;
+            tempInput.select();
+            document.execCommand("copy");
+            document.body.removeChild(tempInput);
+            const btn = document.getElementById('share-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = "🔗 Link Copied";
+            setTimeout(() => btn.innerHTML = originalText, 2000);
+        };
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@300;400;500;600&display=swap');
+        
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #f1f5f9; 
+            color: #1e293b;
+        }
+
+        .heading-font { font-family: 'Playfair Display', serif; }
+
+        input::placeholder, textarea::placeholder {
+            color: #94a3b8;
+            opacity: 0.8;
+        }
+
+        /* Professional Enhanced Date Input Style */
+        .custom-date-input {
+            appearance: none;
+            -webkit-appearance: none;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            padding: 0.6rem 1rem 0.6rem 2.5rem;
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: #334155;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+            position: relative;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' /%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: 0.75rem center;
+            background-size: 1.1rem;
+        }
+
+        .custom-date-input:hover {
+            border-color: #94a3b8;
+            background-color: #f8fafc;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        }
+
+        .custom-date-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            ring: 4px;
+            ring-color: rgba(59, 130, 246, 0.1);
+            background-color: #ffffff;
+        }
+
+        /* Removing default calendar picker styling where possible for a cleaner look */
+        .custom-date-input::-webkit-calendar-picker-indicator {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            cursor: pointer;
+            opacity: 0;
+        }
+
+        .day-card-container {
+            position: relative;
+            background: white;
+            border-radius: 1.25rem;
+            padding: 2.5rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
+            border: 1px solid #f1f5f9;
+        }
+
+        .activity-card {
+            background: #f8fafc;
+            border-radius: 1rem;
+            border: 1px solid #edf2f7;
+            transition: all 0.2s;
+        }
+
+        .activity-card:focus-within {
+            border-color: #3b82f6;
+            background: #fff;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.08);
+        }
+
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white; padding: 0; }
+            .day-card-container { box-shadow: none; border: none; border-bottom: 2px solid #f1f5f9; padding: 1.5rem 0; border-radius: 0; }
+            .activity-card { background: white; border: none; border-left: 3px solid #e2e8f0; border-radius: 0; padding-left: 1.5rem; }
+            .custom-date-input { border: none; padding: 0; background: none; }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-12">
+    <div class="max-w-5xl mx-auto">
+        <!-- Dashboard Header -->
+        <header class="flex flex-col md:flex-row justify-between items-end mb-12 gap-6 no-print">
+            <div class="space-y-1">
+                <span class="text-blue-600 font-semibold tracking-wider text-xs uppercase">Travel Planning Suite</span>
+                <h1 class="text-4xl font-bold text-slate-900 heading-font">Concierge Itinerary</h1>
+                <p class="text-slate-500 text-sm">Real-time collaborative planning for your next adventure.</p>
+            </div>
+            <div class="flex flex-wrap gap-3">
+                <button id="share-btn" onclick="copyShareLink()" class="px-5 py-2.5 bg-white text-slate-700 border border-slate-200 rounded-full font-medium hover:bg-slate-50 transition flex items-center gap-2 shadow-sm active:scale-95">
+                    🔗 Copy Share Link
+                </button>
+                <button onclick="addDay()" class="px-5 py-2.5 bg-blue-600 text-white rounded-full font-medium hover:bg-blue-700 transition shadow-md shadow-blue-100 active:scale-95">
+                    + Add New Day
+                </button>
+                <button onclick="exportToPDF()" class="px-5 py-2.5 bg-slate-900 text-white rounded-full font-medium hover:bg-black transition flex items-center gap-2 shadow-lg active:scale-95">
+                    📥 Export PDF
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Itinerary Canvas -->
+        <div id="itinerary-content" class="space-y-8">
+            <!-- Trip Hero Section -->
+            <div class="bg-slate-900 rounded-[2rem] p-8 md:p-12 text-white relative overflow-hidden shadow-2xl">
+                <div class="absolute top-0 right-0 w-80 h-80 bg-blue-500 opacity-10 rounded-full -mr-32 -mt-32 blur-[100px]"></div>
+                <div class="absolute bottom-0 left-0 w-64 h-64 bg-indigo-500 opacity-5 rounded-full -ml-20 -mb-20 blur-[80px]"></div>
+                <div class="relative z-10 space-y-6">
+                    <input type="text" id="trip-title" placeholder="Untitled Adventure" 
+                        class="bg-transparent text-4xl md:text-5xl font-bold heading-font border-b border-white/20 focus:border-white outline-none w-full placeholder-white/30 transition-all">
+                    <div class="flex items-center gap-3 text-blue-200">
+                        <svg class="w-5 h-5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        <input type="text" id="trip-dates" placeholder="Trip Duration (e.g. 12th - 24th Oct 2026)" 
+                            class="bg-transparent border-none outline-none text-lg placeholder-white/30 w-full focus:ring-0">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Days List -->
+            <div id="days-container" class="space-y-10">
+                <!-- Days will be rendered here -->
+            </div>
+            
+            <div id="empty-state" class="py-32 text-center bg-white rounded-[2rem] border-2 border-dashed border-slate-200">
+                <div class="bg-slate-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-10 h-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                </div>
+                <h3 class="text-lg font-semibold text-slate-800">Your itinerary is empty</h3>
+                <p class="text-slate-500">Start by adding your first travel day.</p>
+                <button onclick="addDay()" class="mt-6 text-blue-600 font-semibold hover:underline">Begin Planning →</button>
+            </div>
+        </div>
+
+        <footer class="mt-20 py-12 text-center text-slate-400 text-sm border-t border-slate-200 no-print">
+            Professional Itinerary Planner &copy; 2026 • Designed for Modern Travelers
+        </footer>
+    </div>
+
+    <!-- Templates -->
+    <template id="day-template">
+        <div class="day-group day-card-container">
+            <div class="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+                <div class="flex items-center gap-6">
+                    <div class="w-14 h-14 bg-slate-900 text-white rounded-[1rem] flex items-center justify-center font-bold text-2xl shadow-xl shadow-slate-200 shrink-0">
+                        <span class="day-number"></span>
+                    </div>
+                    <div class="flex flex-col gap-3 w-full">
+                        <div class="flex flex-col md:flex-row md:items-center gap-4">
+                            <div class="relative inline-block no-print">
+                                <input type="date" class="day-date custom-date-input w-full md:w-auto">
+                            </div>
+                            <input type="text" placeholder="Daily Destination / Headline" 
+                                class="day-headline text-2xl font-bold text-slate-800 bg-transparent border-none focus:ring-0 p-0 w-full md:w-96 placeholder-slate-300">
+                        </div>
+                    </div>
+                </div>
+                <button onclick="removeDay(this)" class="no-print p-2 text-slate-300 hover:text-red-500 transition-colors self-start md:self-auto">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                </button>
+            </div>
+            
+            <div class="activities-container space-y-4 ml-0 md:ml-20">
+                <!-- Activities will be injected here -->
+            </div>
+            
+            <div class="ml-0 md:ml-20 mt-8">
+                <button onclick="addActivity(this)" class="no-print flex items-center gap-2 px-5 py-2.5 border-2 border-blue-50 text-blue-600 rounded-xl font-semibold hover:bg-blue-50 transition active:scale-95">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+                    Add Activity
+                </button>
+            </div>
+        </div>
+    </template>
+
+    <template id="activity-template">
+        <div class="activity-item activity-card p-6 relative group">
+            <button onclick="removeActivity(this)" class="absolute top-6 right-6 no-print text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+            
+            <div class="grid grid-cols-1 gap-4">
+                <div class="space-y-4">
+                    <input type="text" placeholder="Activity (e.g. Dinner at The Ritz)" 
+                        class="act-title bg-transparent font-semibold text-slate-800 text-lg w-full border-none focus:ring-0 p-0 placeholder-slate-400">
+                    
+                    <div class="flex flex-col sm:flex-row sm:items-center gap-4">
+                        <div class="flex items-center gap-3 bg-white px-3.5 py-2 rounded-xl border border-slate-200 shadow-sm flex-1 max-w-lg">
+                            <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                            <input type="url" placeholder="Resource Link (Map, Confirmation, Website)" 
+                                class="act-url text-sm text-blue-600 w-full border-none focus:ring-0 p-0 bg-transparent">
+                        </div>
+                    </div>
+
+                    <textarea placeholder="Detailed notes, reservation codes, or important reminders..." 
+                        class="act-notes w-full text-sm text-slate-600 bg-transparent border-none focus:ring-0 p-0 resize-none min-h-[60px]" rows="2"></textarea>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <script>
+        async function exportToPDF() {
+            const { jsPDF } = window.jspdf;
+            const element = document.getElementById('itinerary-content');
+            const title = document.getElementById('trip-title').value || 'My Itinerary';
+            const btn = event.currentTarget;
+            
+            btn.disabled = true;
+            const originalHTML = btn.innerHTML;
+            btn.innerHTML = `<span class="animate-pulse flex items-center gap-2">Generating PDF...</span>`;
+
+            try {
+                const canvas = await html2canvas(element, {
+                    scale: 2,
+                    useCORS: true,
+                    backgroundColor: '#ffffff',
+                    onclone: (clonedDoc) => {
+                        clonedDoc.querySelectorAll('input, textarea').forEach(input => {
+                            const p = clonedDoc.createElement('div');
+                            let val = input.value;
+                            
+                            if (input.type === 'date' && val) {
+                                const d = new Date(val);
+                                val = d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+                            }
+                            
+                            p.innerText = val || "";
+                            
+                            const isTitle = input.id === 'trip-title';
+                            const isHeadline = input.classList.contains('day-headline');
+                            const isActivityTitle = input.classList.contains('act-title');
+                            
+                            p.style.cssText = `
+                                font-family: ${isTitle || isHeadline ? "'Playfair Display', serif" : "'Inter', sans-serif"};
+                                font-size: ${isTitle ? '48px' : isHeadline ? '28px' : isActivityTitle ? '20px' : '14px'};
+                                font-weight: ${isTitle || isHeadline || isActivityTitle ? 'bold' : 'normal'};
+                                color: ${isTitle ? '#ffffff' : '#1e293b'};
+                                margin-bottom: 8px;
+                                white-space: pre-wrap;
+                            `;
+                            input.parentNode.replaceChild(p, input);
+                        });
+                        clonedDoc.querySelectorAll('.no-print').forEach(el => el.style.display = 'none');
+                    }
+                });
+
+                const imgData = canvas.toDataURL('image/jpeg', 0.98);
+                const pdf = new jsPDF('p', 'mm', 'a4');
+                const pdfWidth = pdf.internal.pageSize.getWidth();
+                const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+                
+                pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+                pdf.save(`${title.replace(/\s+/g, '_')}_Itinerary.pdf`);
+            } catch (err) {
+                console.error("PDF Export Error:", err);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalHTML;
+            }
+        }
+    </script>
+</body>
+</html>
