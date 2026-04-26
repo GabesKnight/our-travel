@@ -1,454 +1,377 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Premium Holiday Itinerary</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- PDF Generation Libraries -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+import React, { useState, useEffect } from 'react';
+import { 
+  Plane, 
+  MapPin, 
+  Calendar, 
+  DollarSign, 
+  Plus, 
+  Trash2, 
+  Users, 
+  CheckCircle2, 
+  ChevronRight,
+  Clock,
+  Compass,
+  Wallet,
+  ExternalLink,
+  RefreshCw,
+  Share2,
+  AlertCircle
+} from 'lucide-react';
+
+/**
+ * GOOGLE SHEETS BACKEND CONNECTED
+ * URL: https://script.google.com/macros/s/AKfycbzR0z8w4vut1oWjNVoIx3c6VuEAybJD6biDhCV12J3XHX3oZKMhQKbTDzLgZLsG5Nwd/exec
+ */
+
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzR0z8w4vut1oWjNVoIx3c6VuEAybJD6biDhCV12J3XHX3oZKMhQKbTDzLgZLsG5Nwd/exec";
+
+const App = () => {
+  const [trips, setTrips] = useState([]);
+  const [activeTrip, setActiveTrip] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState(null);
+  const [view, setView] = useState('dashboard');
+  
+  // Form States
+  const [newTripName, setNewTripName] = useState('');
+  const [itineraryItem, setItineraryItem] = useState({ title: '', time: '', date: '', cost: 0 });
+
+  const fetchData = async () => {
+    if (!SCRIPT_URL) return;
+    setSyncing(true);
+    setError(null);
+    try {
+      const response = await fetch(SCRIPT_URL);
+      if (!response.ok) throw new Error('Failed to reach Google Sheets');
+      const data = await response.json();
+      setTrips(Array.isArray(data) ? data : []);
+      
+      if (activeTrip) {
+        const updated = data.find(t => t.id === activeTrip.id);
+        if (updated) setActiveTrip(updated);
+      }
+    } catch (err) {
+      console.error("Fetch error:", err);
+      setError("Connection issue. Please ensure your Apps Script is deployed to 'Anyone'.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 15000); // Poll every 15s for group collaboration
+    return () => clearInterval(interval);
+  }, [activeTrip?.id]);
+
+  const syncToSheets = async (updatedTrips) => {
+    if (!SCRIPT_URL) return;
+    setSyncing(true);
+    try {
+      // Use 'no-cors' mode for POSTing to Apps Script Web Apps
+      await fetch(SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedTrips)
+      });
+      // Small delay then refresh local state to confirm sync
+      setTimeout(fetchData, 1500); 
+    } catch (err) {
+      console.error("Sync error:", err);
+      setError("Failed to save changes to the sheet.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const createTrip = async (e) => {
+    e.preventDefault();
+    if (!newTripName.trim()) return;
+
+    const newTrip = {
+      id: crypto.randomUUID(),
+      name: newTripName,
+      createdAt: Date.now(),
+      itinerary: [],
+      budget: 0
+    };
     
-    <!-- Firebase SDKs -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+    const updated = [...trips, newTrip];
+    setTrips(updated);
+    await syncToSheets(updated);
+    setNewTripName('');
+  };
 
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'holiday-planner';
+  const addItineraryItem = async () => {
+    if (!itineraryItem.title || !activeTrip) return;
+    
+    const newItem = { ...itineraryItem, id: crypto.randomUUID() };
+    const updatedItinerary = [...(activeTrip.itinerary || []), newItem];
+    const totalBudget = updatedItinerary.reduce((sum, item) => sum + (parseFloat(item.cost) || 0), 0);
 
-        let tripId = new URLSearchParams(window.location.search).get('trip');
-        if (!tripId) {
-            tripId = crypto.randomUUID();
-            const newUrl = new URL(window.location);
-            newUrl.searchParams.set('trip', tripId);
-            window.history.pushState({}, '', newUrl);
-        }
+    const updatedTrips = trips.map(t => 
+      t.id === activeTrip.id 
+      ? { ...t, itinerary: updatedItinerary, budget: totalBudget } 
+      : t
+    );
 
-        let isUpdatingFromServer = false;
-        let currentUser = null;
+    setTrips(updatedTrips);
+    await syncToSheets(updatedTrips);
+    setItineraryItem({ title: '', time: '', date: '', cost: 0 });
+  };
 
-        window.addEventListener('DOMContentLoaded', async () => {
-            const initAuth = async () => {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            };
-            await initAuth();
-            onAuthStateChanged(auth, (user) => {
-                currentUser = user;
-                if (user) setupFirestoreListener();
-            });
+  const removeItineraryItem = async (itemId) => {
+    const updatedItinerary = activeTrip.itinerary.filter(item => item.id !== itemId);
+    const totalBudget = updatedItinerary.reduce((sum, item) => sum + (parseFloat(item.cost) || 0), 0);
+    
+    const updatedTrips = trips.map(t => 
+      t.id === activeTrip.id 
+      ? { ...t, itinerary: updatedItinerary, budget: totalBudget } 
+      : t
+    );
 
-            document.getElementById('itinerary-content').addEventListener('input', debounce(() => {
-                if (!isUpdatingFromServer) saveToFirebase();
-            }, 1000));
-        });
+    setTrips(updatedTrips);
+    await syncToSheets(updatedTrips);
+  };
 
-        function setupFirestoreListener() {
-            if (!currentUser) return;
-            const tripDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'trips', tripId);
-            onSnapshot(tripDocRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    isUpdatingFromServer = true;
-                    renderData(docSnap.data());
-                    isUpdatingFromServer = false;
-                } else {
-                    saveToFirebase(); 
-                }
-            }, (error) => console.error("Firestore Error:", error));
-        }
+  const deleteTrip = async (e, id) => {
+    e.stopPropagation();
+    const updated = trips.filter(t => t.id !== id);
+    setTrips(updated);
+    await syncToSheets(updated);
+  };
 
-        async function saveToFirebase() {
-            if (!currentUser) return;
-            const data = {
-                title: document.getElementById('trip-title').value,
-                dates: document.getElementById('trip-dates').value,
-                days: []
-            };
-            document.querySelectorAll('.day-group').forEach(group => {
-                const day = {
-                    headline: group.querySelector('.day-headline').value,
-                    date: group.querySelector('.day-date').value,
-                    activities: []
-                };
-                group.querySelectorAll('.activity-item').forEach(item => {
-                    day.activities.push({
-                        title: item.querySelector('.act-title').value,
-                        url: item.querySelector('.act-url').value,
-                        notes: item.querySelector('.act-notes').value
-                    });
-                });
-                data.days.push(day);
-            });
-            const tripDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'trips', tripId);
-            await setDoc(tripDocRef, data).catch(err => console.error("Save Error:", err));
-        }
-
-        function renderData(data) {
-            document.getElementById('trip-title').value = data.title || "";
-            document.getElementById('trip-dates').value = data.dates || "";
-            const container = document.getElementById('days-container');
-            container.innerHTML = "";
-            if (!data.days || data.days.length === 0) {
-                document.getElementById('empty-state').classList.remove('hidden');
-                return;
-            }
-            document.getElementById('empty-state').classList.add('hidden');
-            data.days.forEach((day, index) => {
-                const dayTemplate = document.getElementById('day-template');
-                const dayClone = dayTemplate.content.cloneNode(true);
-                dayClone.querySelector('.day-number').textContent = index + 1;
-                dayClone.querySelector('.day-headline').value = day.headline || "";
-                dayClone.querySelector('.day-date').value = day.date || "";
-                const actContainer = dayClone.querySelector('.activities-container');
-                (day.activities || []).forEach(act => {
-                    const actTemplate = document.getElementById('activity-template');
-                    const actClone = actTemplate.content.cloneNode(true);
-                    actClone.querySelector('.act-title').value = act.title || "";
-                    actClone.querySelector('.act-url').value = act.url || "";
-                    actClone.querySelector('.act-notes').value = act.notes || "";
-                    actContainer.appendChild(actClone);
-                });
-                container.appendChild(dayClone);
-            });
-        }
-
-        function debounce(func, timeout = 300) {
-            let timer;
-            return (...args) => {
-                clearTimeout(timer);
-                timer = setTimeout(() => { func.apply(this, args); }, timeout);
-            };
-        }
-
-        window.addDay = () => {
-            const container = document.getElementById('days-container');
-            const template = document.getElementById('day-template');
-            container.appendChild(template.content.cloneNode(true));
-            renderDataFromDOM(); // Refresh numbers
-            saveToFirebase();
-        };
-
-        function renderDataFromDOM() {
-            document.querySelectorAll('.day-number').forEach((span, i) => span.textContent = i + 1);
-        }
-
-        window.removeDay = (btn) => {
-            btn.closest('.day-group').remove();
-            renderDataFromDOM();
-            saveToFirebase();
-        };
-
-        window.addActivity = (btn) => {
-            const container = btn.closest('.day-group').querySelector('.activities-container');
-            container.appendChild(document.getElementById('activity-template').content.cloneNode(true));
-            saveToFirebase();
-        };
-
-        window.removeActivity = (btn) => {
-            btn.closest('.activity-item').remove();
-            saveToFirebase();
-        };
-
-        window.copyShareLink = () => {
-            const url = window.location.href;
-            const tempInput = document.createElement("input");
-            document.body.appendChild(tempInput);
-            tempInput.value = url;
-            tempInput.select();
-            document.execCommand("copy");
-            document.body.removeChild(tempInput);
-            const btn = document.getElementById('share-btn');
-            const originalText = btn.innerHTML;
-            btn.innerHTML = "🔗 Link Copied";
-            setTimeout(() => btn.innerHTML = originalText, 2000);
-        };
-    </script>
-
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@300;400;500;600&display=swap');
-        
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background-color: #f1f5f9; 
-            color: #1e293b;
-        }
-
-        .heading-font { font-family: 'Playfair Display', serif; }
-
-        input::placeholder, textarea::placeholder {
-            color: #94a3b8;
-            opacity: 0.8;
-        }
-
-        /* Professional Enhanced Date Input Style */
-        .custom-date-input {
-            appearance: none;
-            -webkit-appearance: none;
-            background: #ffffff;
-            border: 1px solid #e2e8f0;
-            padding: 0.6rem 1rem 0.6rem 2.5rem;
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            font-weight: 500;
-            color: #334155;
-            cursor: pointer;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-            position: relative;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' /%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: 0.75rem center;
-            background-size: 1.1rem;
-        }
-
-        .custom-date-input:hover {
-            border-color: #94a3b8;
-            background-color: #f8fafc;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        }
-
-        .custom-date-input:focus {
-            outline: none;
-            border-color: #3b82f6;
-            ring: 4px;
-            ring-color: rgba(59, 130, 246, 0.1);
-            background-color: #ffffff;
-        }
-
-        /* Removing default calendar picker styling where possible for a cleaner look */
-        .custom-date-input::-webkit-calendar-picker-indicator {
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            margin: 0;
-            padding: 0;
-            cursor: pointer;
-            opacity: 0;
-        }
-
-        .day-card-container {
-            position: relative;
-            background: white;
-            border-radius: 1.25rem;
-            padding: 2.5rem;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
-            border: 1px solid #f1f5f9;
-        }
-
-        .activity-card {
-            background: #f8fafc;
-            border-radius: 1rem;
-            border: 1px solid #edf2f7;
-            transition: all 0.2s;
-        }
-
-        .activity-card:focus-within {
-            border-color: #3b82f6;
-            background: #fff;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.08);
-        }
-
-        @media print {
-            .no-print { display: none !important; }
-            body { background: white; padding: 0; }
-            .day-card-container { box-shadow: none; border: none; border-bottom: 2px solid #f1f5f9; padding: 1.5rem 0; border-radius: 0; }
-            .activity-card { background: white; border: none; border-left: 3px solid #e2e8f0; border-radius: 0; padding-left: 1.5rem; }
-            .custom-date-input { border: none; padding: 0; background: none; }
-        }
-    </style>
-</head>
-<body class="p-4 md:p-12">
-    <div class="max-w-5xl mx-auto">
-        <!-- Dashboard Header -->
-        <header class="flex flex-col md:flex-row justify-between items-end mb-12 gap-6 no-print">
-            <div class="space-y-1">
-                <span class="text-blue-600 font-semibold tracking-wider text-xs uppercase">Travel Planning Suite</span>
-                <h1 class="text-4xl font-bold text-slate-900 heading-font">Concierge Itinerary</h1>
-                <p class="text-slate-500 text-sm">Real-time collaborative planning for your next adventure.</p>
-            </div>
-            <div class="flex flex-wrap gap-3">
-                <button id="share-btn" onclick="copyShareLink()" class="px-5 py-2.5 bg-white text-slate-700 border border-slate-200 rounded-full font-medium hover:bg-slate-50 transition flex items-center gap-2 shadow-sm active:scale-95">
-                    🔗 Copy Share Link
-                </button>
-                <button onclick="addDay()" class="px-5 py-2.5 bg-blue-600 text-white rounded-full font-medium hover:bg-blue-700 transition shadow-md shadow-blue-100 active:scale-95">
-                    + Add New Day
-                </button>
-                <button onclick="exportToPDF()" class="px-5 py-2.5 bg-slate-900 text-white rounded-full font-medium hover:bg-black transition flex items-center gap-2 shadow-lg active:scale-95">
-                    📥 Export PDF
-                </button>
-            </div>
-        </header>
-
-        <!-- Main Itinerary Canvas -->
-        <div id="itinerary-content" class="space-y-8">
-            <!-- Trip Hero Section -->
-            <div class="bg-slate-900 rounded-[2rem] p-8 md:p-12 text-white relative overflow-hidden shadow-2xl">
-                <div class="absolute top-0 right-0 w-80 h-80 bg-blue-500 opacity-10 rounded-full -mr-32 -mt-32 blur-[100px]"></div>
-                <div class="absolute bottom-0 left-0 w-64 h-64 bg-indigo-500 opacity-5 rounded-full -ml-20 -mb-20 blur-[80px]"></div>
-                <div class="relative z-10 space-y-6">
-                    <input type="text" id="trip-title" placeholder="Untitled Adventure" 
-                        class="bg-transparent text-4xl md:text-5xl font-bold heading-font border-b border-white/20 focus:border-white outline-none w-full placeholder-white/30 transition-all">
-                    <div class="flex items-center gap-3 text-blue-200">
-                        <svg class="w-5 h-5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                        <input type="text" id="trip-dates" placeholder="Trip Duration (e.g. 12th - 24th Oct 2026)" 
-                            class="bg-transparent border-none outline-none text-lg placeholder-white/30 w-full focus:ring-0">
-                    </div>
-                </div>
-            </div>
-
-            <!-- Days List -->
-            <div id="days-container" class="space-y-10">
-                <!-- Days will be rendered here -->
-            </div>
-            
-            <div id="empty-state" class="py-32 text-center bg-white rounded-[2rem] border-2 border-dashed border-slate-200">
-                <div class="bg-slate-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg class="w-10 h-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                </div>
-                <h3 class="text-lg font-semibold text-slate-800">Your itinerary is empty</h3>
-                <p class="text-slate-500">Start by adding your first travel day.</p>
-                <button onclick="addDay()" class="mt-6 text-blue-600 font-semibold hover:underline">Begin Planning →</button>
-            </div>
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+      {/* Navigation */}
+      <nav className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
+        <div 
+          className="flex items-center gap-2 cursor-pointer" 
+          onClick={() => { setView('dashboard'); setActiveTrip(null); }}
+        >
+          <div className="bg-emerald-600 p-2 rounded-lg text-white shadow-lg shadow-emerald-100">
+            <Plane size={20} />
+          </div>
+          <h1 className="text-xl font-bold tracking-tight text-slate-800">SheetTravel</h1>
         </div>
+        <div className="flex items-center gap-4">
+          {error && (
+            <div className="hidden md:flex items-center gap-1 text-rose-500 text-xs font-medium bg-rose-50 px-3 py-1 rounded-full border border-rose-100">
+              <AlertCircle size={14}/> {error}
+            </div>
+          )}
+          {syncing && (
+            <div className="flex items-center gap-2 text-emerald-600 text-xs font-bold bg-emerald-50 px-3 py-1 rounded-full animate-pulse">
+              <RefreshCw size={14} className="animate-spin" /> Syncing...
+            </div>
+          )}
+          <div className="bg-slate-100 text-slate-600 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 border border-slate-200">
+            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
+            Google Sheets Connected
+          </div>
+        </div>
+      </nav>
 
-        <footer class="mt-20 py-12 text-center text-slate-400 text-sm border-t border-slate-200 no-print">
-            Professional Itinerary Planner &copy; 2026 • Designed for Modern Travelers
-        </footer>
-    </div>
+      <main className="max-w-5xl mx-auto p-6">
+        {view === 'dashboard' ? (
+          <div className="space-y-8 animate-in fade-in duration-500">
+            <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+              <div>
+                <h2 className="text-3xl font-extrabold text-slate-900">Your Adventures</h2>
+                <p className="text-slate-500 mt-1">Managed collaboratively via your private Google Sheet.</p>
+              </div>
+              <form onSubmit={createTrip} className="flex gap-2">
+                <input 
+                  type="text" 
+                  placeholder="New Trip Name" 
+                  className="px-4 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-full md:w-64 bg-white shadow-sm"
+                  value={newTripName}
+                  onChange={(e) => setNewTripName(e.target.value)}
+                />
+                <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-xl flex items-center gap-2 transition-all font-semibold shadow-lg shadow-emerald-100/50 active:scale-95">
+                  <Plus size={18} /> New Trip
+                </button>
+              </form>
+            </header>
 
-    <!-- Templates -->
-    <template id="day-template">
-        <div class="day-group day-card-container">
-            <div class="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
-                <div class="flex items-center gap-6">
-                    <div class="w-14 h-14 bg-slate-900 text-white rounded-[1rem] flex items-center justify-center font-bold text-2xl shadow-xl shadow-slate-200 shrink-0">
-                        <span class="day-number"></span>
-                    </div>
-                    <div class="flex flex-col gap-3 w-full">
-                        <div class="flex flex-col md:flex-row md:items-center gap-4">
-                            <div class="relative inline-block no-print">
-                                <input type="date" class="day-date custom-date-input w-full md:w-auto">
-                            </div>
-                            <input type="text" placeholder="Daily Destination / Headline" 
-                                class="day-headline text-2xl font-bold text-slate-800 bg-transparent border-none focus:ring-0 p-0 w-full md:w-96 placeholder-slate-300">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {trips.length === 0 && !syncing ? (
+                <div className="col-span-full py-24 text-center border-2 border-dashed border-slate-200 rounded-3xl bg-white/50 backdrop-blur-sm">
+                  <Compass size={56} className="mx-auto text-slate-300 mb-4" />
+                  <p className="text-slate-400 font-medium">No trips found in your sheet.</p>
+                  <p className="text-slate-400 text-sm">Create one above to get started!</p>
+                </div>
+              ) : (
+                trips.map(trip => (
+                  <div 
+                    key={trip.id} 
+                    onClick={() => { setActiveTrip(trip); setView('trip-details'); }}
+                    className="group bg-white p-6 rounded-3xl border border-slate-200 hover:shadow-xl hover:border-emerald-100 transition-all cursor-pointer relative overflow-hidden active:scale-[0.98]"
+                  >
+                    <div className="relative z-10">
+                      <div className="flex justify-between items-start mb-4">
+                        <div className="bg-emerald-50 text-emerald-600 p-3 rounded-2xl">
+                          <MapPin size={24} />
                         </div>
+                        <button 
+                          onClick={(e) => deleteTrip(e, trip.id)}
+                          className="text-slate-300 hover:text-rose-500 p-2 transition-colors rounded-lg hover:bg-rose-50"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                      <h3 className="text-xl font-bold text-slate-800 mb-1 group-hover:text-emerald-600 transition-colors">
+                        {trip.name}
+                      </h3>
+                      <div className="flex items-center gap-4 mt-4 pt-4 border-t border-slate-50">
+                        <div className="flex items-center gap-1 text-slate-500 text-sm font-medium">
+                          <Wallet size={14} className="text-emerald-500" />
+                          <span>${trip.budget || 0}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-slate-500 text-sm font-medium">
+                          <Calendar size={14} className="text-emerald-500" />
+                          <span>{trip.itinerary?.length || 0} activities</span>
+                        </div>
+                      </div>
                     </div>
-                </div>
-                <button onclick="removeDay(this)" class="no-print p-2 text-slate-300 hover:text-red-500 transition-colors self-start md:self-auto">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                </button>
+                  </div>
+                ))
+              )}
             </div>
-            
-            <div class="activities-container space-y-4 ml-0 md:ml-20">
-                <!-- Activities will be injected here -->
-            </div>
-            
-            <div class="ml-0 md:ml-20 mt-8">
-                <button onclick="addActivity(this)" class="no-print flex items-center gap-2 px-5 py-2.5 border-2 border-blue-50 text-blue-600 rounded-xl font-semibold hover:bg-blue-50 transition active:scale-95">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
-                    Add Activity
-                </button>
-            </div>
-        </div>
-    </template>
-
-    <template id="activity-template">
-        <div class="activity-item activity-card p-6 relative group">
-            <button onclick="removeActivity(this)" class="absolute top-6 right-6 no-print text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </div>
+        ) : (
+          <div className="animate-in slide-in-from-right duration-300">
+            <button 
+              onClick={() => setView('dashboard')}
+              className="text-slate-500 hover:text-emerald-600 flex items-center gap-1 mb-6 font-medium bg-white px-4 py-2 rounded-xl border border-slate-100 transition-all shadow-sm hover:shadow-md"
+            >
+              <ChevronRight size={18} className="rotate-180" /> Back to Dashboard
             </button>
-            
-            <div class="grid grid-cols-1 gap-4">
-                <div class="space-y-4">
-                    <input type="text" placeholder="Activity (e.g. Dinner at The Ritz)" 
-                        class="act-title bg-transparent font-semibold text-slate-800 text-lg w-full border-none focus:ring-0 p-0 placeholder-slate-400">
-                    
-                    <div class="flex flex-col sm:flex-row sm:items-center gap-4">
-                        <div class="flex items-center gap-3 bg-white px-3.5 py-2 rounded-xl border border-slate-200 shadow-sm flex-1 max-w-lg">
-                            <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
-                            <input type="url" placeholder="Resource Link (Map, Confirmation, Website)" 
-                                class="act-url text-sm text-blue-600 w-full border-none focus:ring-0 p-0 bg-transparent">
-                        </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="lg:col-span-2 space-y-6">
+                <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-full h-2 bg-emerald-600"></div>
+                  <div className="flex items-center justify-between mb-8">
+                    <h2 className="text-3xl font-black text-slate-900">{activeTrip?.name}</h2>
+                    <div className="bg-emerald-600 text-white px-5 py-2 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-emerald-100/50">
+                      <DollarSign size={18} /> {activeTrip?.budget} Total
                     </div>
+                  </div>
 
-                    <textarea placeholder="Detailed notes, reservation codes, or important reminders..." 
-                        class="act-notes w-full text-sm text-slate-600 bg-transparent border-none focus:ring-0 p-0 resize-none min-h-[60px]" rows="2"></textarea>
+                  <div className="bg-slate-50 p-6 rounded-2xl mb-8 border border-slate-100">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                       <Plus size={14} /> New Activity
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <input 
+                        type="text" 
+                        placeholder="What's the plan?" 
+                        className="col-span-1 md:col-span-2 px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                        value={itineraryItem.title}
+                        onChange={(e) => setItineraryItem({...itineraryItem, title: e.target.value})}
+                      />
+                      <input 
+                        type="date" 
+                        className="px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        value={itineraryItem.date}
+                        onChange={(e) => setItineraryItem({...itineraryItem, date: e.target.value})}
+                      />
+                      <input 
+                        type="time" 
+                        className="px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        value={itineraryItem.time}
+                        onChange={(e) => setItineraryItem({...itineraryItem, time: e.target.value})}
+                      />
+                      <div className="relative">
+                        <DollarSign size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input 
+                          type="number" 
+                          placeholder="Cost" 
+                          className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          value={itineraryItem.cost}
+                          onChange={(e) => setItineraryItem({...itineraryItem, cost: e.target.value})}
+                        />
+                      </div>
+                      <button 
+                        onClick={addItineraryItem}
+                        disabled={syncing}
+                        className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-emerald-50 flex items-center justify-center gap-2 active:scale-95"
+                      >
+                        {syncing ? <RefreshCw size={18} className="animate-spin" /> : 'Add to Schedule'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Planned Events</h4>
+                    {!activeTrip?.itinerary?.length ? (
+                      <div className="text-center py-16 bg-slate-50/50 rounded-2xl border-2 border-dotted border-slate-200">
+                        <p className="text-slate-400 italic">Itinerary is currently empty.</p>
+                      </div>
+                    ) : (
+                      activeTrip.itinerary.map((item) => (
+                        <div key={item.id} className="flex items-center gap-4 p-5 rounded-2xl border border-slate-100 hover:bg-emerald-50/20 transition-all group bg-white shadow-sm hover:shadow-md">
+                          <div className="bg-emerald-50 p-3 rounded-xl text-emerald-600">
+                            <Clock size={20} />
+                          </div>
+                          <div className="flex-1">
+                            <h5 className="font-bold text-slate-800">{item.title}</h5>
+                            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-1">
+                              <span className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded-md"><Calendar size={12} /> {item.date || 'No Date'}</span>
+                              <span className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded-md"><Clock size={12} /> {item.time || '--:--'}</span>
+                              <span className="font-bold text-emerald-600 ml-auto text-sm bg-emerald-50 px-2 py-1 rounded-lg">${item.cost || 0}</span>
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => removeItineraryItem(item.id)}
+                            className="opacity-0 group-hover:opacity-100 p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+                  <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                    <Share2 size={20} className="text-emerald-600" /> Crew Sharing
+                  </h3>
+                  <div className="space-y-4">
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      Anyone with this app URL can view and edit these trips. Changes sync to your Google Sheet in real-time.
+                    </p>
+                    <div className="p-3 bg-slate-50 rounded-xl text-[10px] font-mono break-all text-slate-400 border border-slate-100 select-all">
+                      {window.location.href}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 p-6 rounded-3xl text-white shadow-xl">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+                    <span className="font-bold text-sm">Live Sheet Sync</span>
+                  </div>
+                  <p className="text-slate-400 text-xs mb-6">
+                    All trip data is encrypted as JSON and stored in Cell A1. Do not edit that cell manually to prevent data corruption.
+                  </p>
+                  <div className="flex items-center justify-between pt-4 border-t border-slate-800">
+                    <Users size={16} className="text-slate-600" />
+                    <span className="text-xs text-slate-500 font-medium tracking-widest uppercase">Multiplayer Enabled</span>
+                  </div>
+                </div>
+              </div>
             </div>
-        </div>
-    </template>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+};
 
-    <script>
-        async function exportToPDF() {
-            const { jsPDF } = window.jspdf;
-            const element = document.getElementById('itinerary-content');
-            const title = document.getElementById('trip-title').value || 'My Itinerary';
-            const btn = event.currentTarget;
-            
-            btn.disabled = true;
-            const originalHTML = btn.innerHTML;
-            btn.innerHTML = `<span class="animate-pulse flex items-center gap-2">Generating PDF...</span>`;
-
-            try {
-                const canvas = await html2canvas(element, {
-                    scale: 2,
-                    useCORS: true,
-                    backgroundColor: '#ffffff',
-                    onclone: (clonedDoc) => {
-                        clonedDoc.querySelectorAll('input, textarea').forEach(input => {
-                            const p = clonedDoc.createElement('div');
-                            let val = input.value;
-                            
-                            if (input.type === 'date' && val) {
-                                const d = new Date(val);
-                                val = d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-                            }
-                            
-                            p.innerText = val || "";
-                            
-                            const isTitle = input.id === 'trip-title';
-                            const isHeadline = input.classList.contains('day-headline');
-                            const isActivityTitle = input.classList.contains('act-title');
-                            
-                            p.style.cssText = `
-                                font-family: ${isTitle || isHeadline ? "'Playfair Display', serif" : "'Inter', sans-serif"};
-                                font-size: ${isTitle ? '48px' : isHeadline ? '28px' : isActivityTitle ? '20px' : '14px'};
-                                font-weight: ${isTitle || isHeadline || isActivityTitle ? 'bold' : 'normal'};
-                                color: ${isTitle ? '#ffffff' : '#1e293b'};
-                                margin-bottom: 8px;
-                                white-space: pre-wrap;
-                            `;
-                            input.parentNode.replaceChild(p, input);
-                        });
-                        clonedDoc.querySelectorAll('.no-print').forEach(el => el.style.display = 'none');
-                    }
-                });
-
-                const imgData = canvas.toDataURL('image/jpeg', 0.98);
-                const pdf = new jsPDF('p', 'mm', 'a4');
-                const pdfWidth = pdf.internal.pageSize.getWidth();
-                const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-                
-                pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
-                pdf.save(`${title.replace(/\s+/g, '_')}_Itinerary.pdf`);
-            } catch (err) {
-                console.error("PDF Export Error:", err);
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = originalHTML;
-            }
-        }
-    </script>
-</body>
-</html>
+export default App;
